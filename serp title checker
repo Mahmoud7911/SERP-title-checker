@@ -1,0 +1,137 @@
+// ==UserScript==
+// @name         Google SERP Title Checker (Enhanced)
+// @namespace    http://tampermonkey.net/
+// @version      1.4
+// @description  Check if Google has changed page titles in search results
+// @match        https://www.google.com/search*
+// @match        https://www.google.*/search*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    let changed = 0;
+    let unchanged = 0;
+    let unresolved = 0;
+
+    const corsProxies = [
+        'https://api.allorigins.win/raw?url=',
+        'https://cors-anywhere.herokuapp.com/',
+        'https://cors.bridged.cc/',
+        'https://cors.io/?uri='
+    ];
+
+    function addButton() {
+        const button = document.createElement('button');
+        button.textContent = 'Check Titles';
+        button.style.position = 'fixed';
+        button.style.top = '10px';
+        button.style.right = '10px';
+        button.style.zIndex = '9999';
+        button.addEventListener('click', checkTitles);
+        document.body.appendChild(button);
+    }
+
+    function checkTitles() {
+        console.log('Checking titles...');
+
+        const items = [];
+        const results = document.querySelectorAll('.g');
+
+        console.log(`Found ${results.length} results`);
+
+        document.querySelectorAll('.title-changed, #TitleCheckSummary').forEach(el => el.remove());
+
+        results.forEach((result, index) => {
+            const titleElement = result.querySelector('h3');
+            const linkElement = result.querySelector('a');
+            if (titleElement && linkElement) {
+                const title = titleElement.textContent.trim();
+                const url = linkElement.href;
+                if (url && url.startsWith('http')) {
+                    items.push([index + 1, title, encodeURIComponent(url), result]);
+                }
+            }
+        });
+
+        console.log(`Processing ${items.length} items`);
+
+        items.forEach(item => {
+            fetchWithRetry(item[2], 3)
+                .then(data => {
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(data, 'text/html');
+                    const actualTitle = doc.querySelector('title')?.textContent.trim();
+                    const html = document.createElement('div');
+                    html.className = 'title-changed';
+                    html.style.cssText = 'font-size: 0.8em; margin-top: 5px;';
+                    if (actualTitle) {
+                        if (actualTitle !== item[1]) {
+                            html.innerHTML = `<span style="color: #ff6961;">Changed: ${actualTitle}</span>`;
+                            changed++;
+                        } else {
+                            html.innerHTML = '<span style="color: darkgreen;">Unchanged</span>';
+                            unchanged++;
+                        }
+                    } else {
+                        html.innerHTML = '<span style="color: orange;">Unable to retrieve title</span>';
+                        unresolved++;
+                    }
+                    item[3].appendChild(html);
+                })
+                .catch(error => {
+                    console.error('Fetch error for URL:', item[2], error);
+                    const html = document.createElement('div');
+                    html.className = 'title-changed';
+                    html.style.cssText = 'font-size: 0.8em; margin-top: 5px;';
+                    html.innerHTML = '<span style="color: lightslategray;">Error: Unable to process request</span>';
+                    item[3].appendChild(html);
+                    unresolved++;
+                })
+                .finally(() => {
+                    if (--items.length === 0) {
+                        showSummary();
+                    }
+                });
+        });
+    }
+
+    function fetchWithRetry(url, retries) {
+        return new Promise((resolve, reject) => {
+            function attempt(n) {
+                fetch(corsProxies[n % corsProxies.length] + url, { mode: 'cors' })
+                    .then(response => {
+                        if (response.ok) {
+                            return response.text();
+                        } else {
+                            throw new Error('Response not OK');
+                        }
+                    })
+                    .then(resolve)
+                    .catch(error => {
+                        console.error('Fetch attempt failed:', error);
+                        if (n === 0) {
+                            reject(error);
+                        } else {
+                            attempt(n - 1);
+                        }
+                    });
+            }
+            attempt(retries);
+        });
+    }
+
+    function showSummary() {
+        const summary = document.createElement('div');
+        summary.id = 'TitleCheckSummary';
+        summary.style.cssText = 'position: fixed; top: 50px; right: 10px; background: black; border: 1px solid #ddd; padding: 10px; z-index: 9999;';
+        summary.innerHTML = `<h3>Title Check Summary</h3>
+            <p>Changed: ${changed}</p>
+            <p>Unchanged: ${unchanged}</p>
+            <p>Unresolved: ${unresolved}</p>`;
+        document.body.appendChild(summary);
+    }
+
+    addButton();
+})();
